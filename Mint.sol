@@ -31,7 +31,6 @@ contract Mint is Ownable, IMint {
 
     constructor(address collateral) {
         collateralToken = collateral;
-        _currentPositionIndex = 0;
     }
 
     function registerAsset(address assetToken, uint minCollateralRatio, address priceFeed) external override onlyOwner {
@@ -60,25 +59,30 @@ contract Mint is Ownable, IMint {
         return _assetMap[assetToken].token == assetToken;
     }
 
+    function getCollateralRatio(uint collateralAmount, uint assetAmount, address assetToken) public view returns (uint) {
+        Asset storage asset = _assetMap[assetToken];
+        (int relativeAssetPrice, ) = IPriceFeed(asset.priceFeed).getLatestPrice();
+        uint8 decimal = sAsset(assetToken).decimals();
+        return collateralAmount * (10 ** uint256(decimal)) / uint(relativeAssetPrice) / assetAmount;
+    }
+    
     /* TODO: implement your functions here */
-
     function openPosition(uint collateralAmount, address assetToken, uint collateralRatio) external override {
         require(checkRegistered(assetToken) == true);
         require(collateralRatio >= _assetMap[assetToken].minCollateralRatio);
 
-        IERC20(collateralToken).transferFrom(msg.sender, address(this) , collateralAmount);
-
-        _idxPositionMap[_currentPositionIndex] = Position(_currentPositionIndex, msg.sender, collateralAmount, assetToken, 0);
-
+        IERC20(collateralToken).transferFrom(msg.sender, address(this), collateralAmount);
+        uint mintAmount = getMintAmount(collateralAmount, assetToken, collateralRatio);
+        sAsset(assetToken).mint(msg.sender, mintAmount);
+        _idxPositionMap[_currentPositionIndex] = Position(_currentPositionIndex, msg.sender, collateralAmount, assetToken, mintAmount);
         _currentPositionIndex += 1;
     }
 
     function closePosition(uint positionIndex) external override {
         Position storage pos = _idxPositionMap[positionIndex];
         address assetToken = pos.assetToken;
-        uint assetAmount = pos.assetAmount;
         uint collateralAmount = pos.collateralAmount;
-        sAsset(assetToken).burn(address(this), assetAmount);
+        sAsset(assetToken).burn(msg.sender, pos.assetAmount);
         IERC20(collateralToken).transferFrom(address(this), msg.sender, collateralAmount);
 
         delete _idxPositionMap[positionIndex];
@@ -91,36 +95,31 @@ contract Mint is Ownable, IMint {
         pos.collateralAmount += collateralAmount;
     }
 
+
     function withdraw(uint positionIndex, uint withdrawAmount) external override {
         Position storage pos = _idxPositionMap[positionIndex];
         require(pos.owner == msg.sender); 
-        if (pos.assetAmount != 0) {
-            uint collateralRatio = (pos.collateralAmount - withdrawAmount) / pos.assetAmount;
-            require(collateralRatio >= _assetMap[pos.assetToken].minCollateralRatio);
-        }
-        IERC20(collateralToken).transferFrom(address(this), msg.sender, withdrawAmount);
+        require(getCollateralRatio(pos.collateralAmount - withdrawAmount, pos.assetAmount, pos.assetToken) >= _assetMap[pos.assetToken].minCollateralRatio, "Poor colltaeral Ratio");
+        IERC20(collateralToken).transfer(msg.sender, withdrawAmount);
         pos.collateralAmount -= withdrawAmount;
     }
 
     function mint(uint positionIndex, uint mintAmount) external override {
         Position storage pos = _idxPositionMap[positionIndex];
         require(pos.owner == msg.sender); 
-        /* uint assetAmount = getMintAmount(mintAmount, pos.assetToken, pos.collateralAmount / pos.assetAmount)
+        uint assetAmount = getMintAmount(mintAmount, pos.assetToken, getCollateralRatio(pos.collateralAmount, pos.assetAmount, pos.assetToken));
+        require(getCollateralRatio(pos.collateralAmount - mintAmount, pos.assetAmount + assetAmount, pos.assetToken) >= _assetMap[pos.assetToken].minCollateralRatio);
+        pos.collateralAmount -= mintAmount;
+        pos.assetAmount += assetAmount; 
 
-        uint collateralAmount = getCollateralAmount(mintAmount, pos.assetToken, pos.collateralAmount / pos.assetAmount);
-        uint collateralRatio = (pos.collateralAmount - collateralAmount) / pos.assetAmount;
-        require(collateralRatio >= _assetMap[pos.assetToken].minCollateralRatio);
-        pos.collateralAmount -= collateralAmount;
-        pos.assetAmount += mintAmount; */
-
-        sAsset(pos.assetToken).mint(address(this), mintAmount);
+        sAsset(pos.assetToken).mint(msg.sender, assetAmount);
     }
 
     function burn(uint positionIndex, uint burnAmount) external override {
         Position storage pos = _idxPositionMap[positionIndex];
         require(pos.owner == msg.sender); 
         pos.assetAmount -= burnAmount;
-        sAsset(pos.assetToken).burn(address(this), burnAmount);
+        sAsset(pos.assetToken).burn(msg.sender, burnAmount);
     }
     
 }
