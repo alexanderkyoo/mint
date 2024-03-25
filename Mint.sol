@@ -41,7 +41,7 @@ contract Mint is Ownable, IMint {
         _assetMap[assetToken] = Asset(assetToken, minCollateralRatio, priceFeed);
     }
 
-    function getPosition(uint positionIndex) external view returns (address, uint, address, uint) {
+   function getPosition(uint positionIndex) external view returns (address, uint, address, uint) {
         require(positionIndex < _currentPositionIndex, "Invalid index");
         Position storage position = _idxPositionMap[positionIndex];
         return (position.owner, position.collateralAmount, position.assetToken, position.assetAmount);
@@ -58,15 +58,15 @@ contract Mint is Ownable, IMint {
     function checkRegistered(address assetToken) public view returns (bool) {
         return _assetMap[assetToken].token == assetToken;
     }
-
+    
     function getCollateralRatio(uint collateralAmount, uint assetAmount, address assetToken) public view returns (uint) {
         Asset storage asset = _assetMap[assetToken];
         (int relativeAssetPrice, ) = IPriceFeed(asset.priceFeed).getLatestPrice();
         uint8 decimal = sAsset(assetToken).decimals();
         return collateralAmount * (10 ** uint256(decimal)) / uint(relativeAssetPrice) / assetAmount;
     }
-    
-    /* TODO: implement your functions here */
+
+/* TODO: implement your functions here */
     function openPosition(uint collateralAmount, address assetToken, uint collateralRatio) external override {
         require(checkRegistered(assetToken) == true);
         require(collateralRatio >= _assetMap[assetToken].minCollateralRatio);
@@ -78,13 +78,25 @@ contract Mint is Ownable, IMint {
         _currentPositionIndex += 1;
     }
 
+/*  Test Failed: 2) Contract: Mint test
+       Test 6: test closePosition:
+     Error: VM Exception while processing transaction: revert ERC20: insufficient allowance
+      at Context.<anonymous> (test/test.js:179:33)
+      at processTicksAndRejections (node:internal/process/task_queues:95:5)
+*/
     function closePosition(uint positionIndex) external override {
         Position storage pos = _idxPositionMap[positionIndex];
+
+        /*2 checks*/
+        require(pos.owner == msg.sender); 
+        require(positionIndex <= _currentPositionIndex);
+
         address assetToken = pos.assetToken;
         uint collateralAmount = pos.collateralAmount;
         sAsset(assetToken).burn(msg.sender, pos.assetAmount);
-        IERC20(collateralToken).transferFrom(address(this), msg.sender, collateralAmount);
 
+        /*changed this line since our collateral is EUSD*/
+        EUSD(collateralToken).transfer(msg.sender, collateralAmount);
         delete _idxPositionMap[positionIndex];
     }
 
@@ -94,8 +106,6 @@ contract Mint is Ownable, IMint {
         IERC20(collateralToken).transferFrom(msg.sender, address(this), collateralAmount);
         pos.collateralAmount += collateralAmount;
     }
-
-
     function withdraw(uint positionIndex, uint withdrawAmount) external override {
         Position storage pos = _idxPositionMap[positionIndex];
         require(pos.owner == msg.sender); 
@@ -104,15 +114,25 @@ contract Mint is Ownable, IMint {
         pos.collateralAmount -= withdrawAmount;
     }
 
+/* Test Failed: Contract: Mint test
+       Test 5: test mint:
+     Error: VM Exception while processing transaction: revert
+      at Context.<anonymous> (test/test.js:159:33)
+      at processTicksAndRejections (node:internal/process/task_queues:95:5)
+*/
     function mint(uint positionIndex, uint mintAmount) external override {
+        /* is mintAmount in units of sAsset*/
         Position storage pos = _idxPositionMap[positionIndex];
         require(pos.owner == msg.sender); 
-        uint assetAmount = getMintAmount(mintAmount, pos.assetToken, getCollateralRatio(pos.collateralAmount, pos.assetAmount, pos.assetToken));
-        require(getCollateralRatio(pos.collateralAmount - mintAmount, pos.assetAmount + assetAmount, pos.assetToken) >= _assetMap[pos.assetToken].minCollateralRatio);
-        pos.collateralAmount -= mintAmount;
-        pos.assetAmount += assetAmount; 
+        /* ensure withdrawal stays above MCR by using the mint amounts */
+        uint collateralAmount = mintAmount *  getCollateralRatio(pos.collateralAmount, pos.assetAmount, pos.assetToken);
+        require(getCollateralRatio(pos.collateralAmount - collateralAmount, pos.assetAmount + mintAmount, pos.assetToken) >= _assetMap[pos.assetToken].minCollateralRatio);
 
-        sAsset(pos.assetToken).mint(msg.sender, assetAmount);
+        /*how to find collateral amount...*/
+        pos.collateralAmount -= collateralAmount;
+        pos.assetAmount += mintAmount; 
+
+        sAsset(pos.assetToken).mint(msg.sender, mintAmount);
     }
 
     function burn(uint positionIndex, uint burnAmount) external override {
@@ -121,5 +141,4 @@ contract Mint is Ownable, IMint {
         pos.assetAmount -= burnAmount;
         sAsset(pos.assetToken).burn(msg.sender, burnAmount);
     }
-    
 }
